@@ -11,6 +11,7 @@
 #                                      the statement holds; check and submit then work on that file
 #   tools/pnp.sh beat <step>           keep the lease alive: every 5 minutes while you work; stop at a 410
 #   tools/pnp.sh check <step>          remove the comments from your file, build it, and record the bytes that built
+#                     [--allow-sorry]  build a file that still holds sorry, to see that it elaborates; records nothing
 #   tools/pnp.sh tidy <step>           only remove the comments
 #   tools/pnp.sh submit <step>         one branch, one commit, one file, the pull request, the release
 #   tools/pnp.sh release <step> <reason> [<sha256 of a search program or of a re-checked file>]
@@ -77,7 +78,10 @@ has_file() { have "$1"; [ -n "$(field "$1" gap.file)" ] || { echo "$1 is a value
 # One line says so when anything was removed.
 tidy() { python3 -I - "$1" <<'PY'
 import re, sys
-p = sys.argv[1]; s = open(p, encoding="utf-8").read(); out = []; i = 0; n = len(s); cut = False
+p = sys.argv[1]
+try: s = open(p, encoding="utf-8").read()
+except UnicodeDecodeError: print("REFUSED: the file is not UTF-8 text\n  fix: save the file as UTF-8 text", file=sys.stderr); sys.exit(1)
+out = []; i = 0; n = len(s); cut = False
 ident = lambda j: j >= 0 and (s[j].isalnum() or s[j] in "_'!?.")
 while i < n:
     c = s[i]
@@ -270,6 +274,7 @@ PY
 format_py() { cat <<'PY'
 import json, re, sys, unicodedata
 p, rel, st = sys.argv[1:4]; imp = json.load(open(st))["gap"].get("imports") or []; mod = rel[5:-5].replace("/", "."); red = "/R_" in rel
+allow = sys.argv[4:] == ["--allow-sorry"]  # check --allow-sorry: the sorry rule alone is skipped; submit never passes it
 WS = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"; S = "[" + WS + "]"
 def tok(x):  # the guard's tok(): 60 UTF-16 units, each one outside [A-Za-z0-9._'] read as ?
     u = str(x).encode("utf-16-le", "surrogatepass")[:120]
@@ -297,7 +302,7 @@ FORB = re.compile(r'"|[«»]|simproc|builtin_|native|bv_decide|ofReduce|reduceNa
   + "|register_|declare_|lcProof|lcUnreachable|" + B + "infix|" + B + "prefix" + A + "|" + B + "postfix" + A + "|set_option|binder_predicate|unif_hint|^" + S + "*add_[A-Za-z0-9_]+|unseal|compile_inductive|irreducible_def|proof_wanted|mk_iff_of_inductive_prop")
 RAW = set('" « » $( %[ @[ `(tactic| `(term| `(command| `(conv| `(doElem| #eval #check #print #reduce #synth #exit #help #lint #guard #guard_msgs #find #simp #norm_num #conv #where #time #check_failure #adaptation_note simproc builtin_ native bv_decide ofReduce reduceNat reduceBool Lean System IO Elab Meta Lake FS Process EIO _root_ RealWorld BaseIO include_str notation polyrith initialize run_cmd run_tac run_elab run_meta by_elab elab macro syntax attribute axiom opaque unsafe partial sorry admit implemented_by extern register_ declare_ lcProof lcUnreachable infix prefix postfix set_option binder_predicate unif_hint unseal compile_inductive irreducible_def proof_wanted mk_iff_of_inductive_prop'.split())
 for k, l in enumerate(L):
-    m = FORB.search(re.sub(r"@\[(local )?simp\]", "", re.sub(LIM + " in" + A, "", l)))
+    m = FORB.search(re.sub(r"@\[(local )?simp\]", "", re.sub(LIM + " in" + A, "", l.replace("sorry", "xxxxx") if allow else l)))
     if m:
         w = m.group(0).strip(WS); h = "; a line may not BEGIN with a name that starts with add_ (the library's commands do): if this is a lemma of yours used in a proof, put it after other text on the line or rename it" if w.startswith("add_") else ""
         if re.fullmatch(S + "*" + LIM + S + "*", l): h = "; a limit option holds only for one declaration: write it as set_option <option> <value> in, directly before the declaration that needs it"
@@ -307,6 +312,8 @@ for k, l in enumerate(L):
 if not th: note(float("inf"), "the file holds no theorem")
 # THE OWN-NAMESPACE RULE. \p{L} and \p{N} are read by mapping each other letter to a and number to 0 (same length), so the
 # patterns stay ASCII and names are cut from the real line. No comment is left to blank: check removed them all.
+# KNOWN GAP: stock macOS python3 (3.9) reads Unicode 13.0, the guard's node a later version; a letter or number added
+# to Unicode after 13.0 is read here as neither, so a name using one may be judged differently than by the guard.
 uni = lambda s: "".join(c if c < "\x80" else "a" if unicodedata.category(c)[0] == "L" else "0" if unicodedata.category(c)[0] == "N" else c for c in s)
 ID = r"[A-Za-z_][A-Za-z0-9_'!?]*(?:\.[A-Za-z_][A-Za-z0-9_'!?]*)*"; W = lambda ws: re.compile(r"(?<![A-Za-z0-9_.'!?])(?:" + ws + r")(?![A-Za-z0-9_'!?])")
 SW, AT = W("namespace|section|end|mutual"), W("def|theorem|lemma|abbrev|instance|structure|class|inductive|coinductive|example|opaque|axiom|noncomputable|private|protected|partial|unsafe|variable|universe|attribute|export|deriving|alias|local|scoped|omit|include|mk_iff_of_inductive_prop")
@@ -352,7 +359,7 @@ for w in out: print("REFUSED: " + w + "".join("\n  fix: " + f for s, f in FIX if
 print("not built: the project's checker refuses this file before any build, for the lines above", file=sys.stderr); sys.exit(1)
 PY
 }
-format_ok() { python3 -I -c "$(format_py)" "$ROOT/$2" "$2" "$STATE/$1.json" || exit 1; }
+format_ok() { python3 -I -c "$(format_py)" "$ROOT/$2" "$2" "$STATE/$1.json" ${3:+"$3"} || exit 1; }
 case "${1:-help}" in
 setup)
   need git "https://git-scm.com"; need curl "curl"; need python3 "python 3"
@@ -385,10 +392,12 @@ print("STOP: " + re.sub(r"[^ -~]", " ", str(d.get("error") or "the lease is gone
   ;;
 check)
   has_file "$2"; id="$2"; file="$(field "$id" gap.file)"; rm -f "$STATE/$id.checked"; still_open "$id"
+  as="${3:-}"; [ -z "$as" ] || [ "$as" = --allow-sorry ] || { echo "unknown: $as (the one option of check is --allow-sorry)" >&2; exit 1; }
   tidy "$ROOT/$file"; size_ok "$file"; built="$(sha < "$ROOT/$file")"
-  format_ok "$id" "$file"
+  format_ok "$id" "$file" "$as"
   (cd "$ROOT/lean" && lake build "$(field "$id" gap.module)") || exit 1
   [ "$(sha < "$ROOT/$file")" = "$built" ] || { echo "$file changed while it was building; run check again" >&2; exit 1; }
+  [ -z "$as" ] || { echo "it builds with --allow-sorry, so nothing was recorded: this file cannot be submitted while it holds sorry; when the proof is done, run: tools/pnp.sh check $id" >&2; exit 0; }
   printf '%s %s\n' "$built" "$file" > "$STATE/$id.checked"
   echo "it builds. The pull request is checked again by the project's own checker, which is stricter: see the FORMAT RULES in join.txt."
   ;;
@@ -446,6 +455,6 @@ release)
   curl -sS -X POST "$DESK/release?$q"
   ;;
 *)
-  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
   ;;
 esac

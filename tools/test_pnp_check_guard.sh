@@ -49,11 +49,22 @@ printf '%s' "${H}import Evil.M"$'\n'"private def f : Nat := sorry"$'\n' > "$R/$F
 # a clean file, with a comment that holds a refused word (check removes comments first): built and recorded
 printf '%s' "${H}namespace $M"$'\n'"/-- a helper, no sorry here -/"$'\n'"private def f : ℕ := 1"$'\n'"end $M"$'\n'"open $M in"$'\n'"$T" > "$R/$F"; rm -f "$LAKED"; pnp check L-x-1
 [ "$rc" = 0 ] && grep -qx "$M" "$LAKED" && [ -s "$R/.pnp/L-x-1.checked" ] && ! grep -q REFUSED "$t/err" || { echo "FAIL: a clean file did not reach the build"; cat "$t/out" "$t/err"; exit 1; }
+# check --allow-sorry: only the sorry rule is skipped, the file reaches the build, nothing is recorded, submit refuses it
+SR="${H}theorem $M : True := by"$'\n'"  sorry"$'\n'; printf '%s' "$SR" > "$R/$F"; rm -f "$LAKED"; pnp check L-x-1 --allow-sorry
+[ "$rc" = 0 ] && grep -qx "$M" "$LAKED" && [ ! -e "$R/.pnp/L-x-1.checked" ] && grep -qF 'this file cannot be submitted while it holds sorry' "$t/err" && ! grep -q REFUSED "$t/err" || { echo "FAIL: --allow-sorry"; cat "$t/out" "$t/err"; exit 1; }
+pnp submit L-x-1; [ "$rc" = 1 ] && grep -qF 'is not the file that was checked' "$t/err" || { echo "FAIL: submit took an --allow-sorry check"; cat "$t/err"; exit 1; }
+printf '%s' "$SR  #eval 1"$'\n' > "$R/$F"; rm -f "$LAKED"; pnp check L-x-1 --allow-sorry
+[ "$rc" = 1 ] && [ ! -e "$LAKED" ] && grep -qF 'REFUSED: line 6: "#eval" is not allowed' "$t/err" && ! grep -q '"sorry"' "$t/err" || { echo "FAIL: --allow-sorry skipped more than sorry"; cat "$t/err"; exit 1; }
+printf '%s' "$SR" > "$R/$F"; pnp check L-x-1 --allow-sorrys; [ "$rc" = 1 ] && grep -q '^unknown: --allow-sorrys' "$t/err" || { echo "FAIL: an unknown option"; cat "$t/err"; exit 1; }
+pnp check L-x-1; [ "$rc" = 1 ] && grep -qF 'REFUSED: line 5: "sorry" is not allowed' "$t/err" || { echo "FAIL: sorry without the flag"; cat "$t/err"; exit 1; }
+# a file that is not UTF-8: one refusal, the guard's sentence and the fix, no traceback, no build
+{ printf '%s' "$H$T"; printf '\377\n'; } > "$R/$F"; rm -f "$LAKED"; pnp check L-x-1
+[ "$rc" = 1 ] && [ ! -e "$LAKED" ] && [ "$(cat "$t/err")" = "REFUSED: the file is not UTF-8 text"$'\n'"  fix: save the file as UTF-8 text" ] || { echo "FAIL: not UTF-8"; cat "$t/err"; exit 1; }
 # submit refuses a file the guard refuses, even when it carries a record of check (a check made before this rule)
 printf '%s' "$H$T  sorry"$'\n' > "$R/$F"; printf '%s %s\n' "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$R/$F")" "$F" > "$R/.pnp/L-x-1.checked"
 pnp submit L-x-1; [ "$rc" = 1 ] && grep -qF 'REFUSED: line 5: "sorry" is not allowed' "$t/err" && ! grep -q 'still contains sorry' "$t/err" || { echo "FAIL: submit did not refuse"; cat "$t/err"; exit 1; }
 git -C "$R" rev-parse -q --verify HEAD >/dev/null && { echo "FAIL: submit committed"; exit 1; }
-echo "rules: $n refusals, all problems at once, a clean file built, submit refuses: pass"
+echo "rules: $n refusals, all problems at once, a clean file built, --allow-sorry, not UTF-8, submit refuses: pass"
 
 # PARITY. The guard's own test inputs are recorded by running its test file against a recording copy of the guard.
 command -v node >/dev/null || { echo "SKIPPED parity: node is not installed, so the guard cannot be run here"; exit 1; }
