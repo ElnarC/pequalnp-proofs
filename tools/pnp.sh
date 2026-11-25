@@ -263,6 +263,96 @@ json.dump(d, open(sf, "w"), indent=1)
 print("NEXT       tools/pnp.sh check %s, then tools/pnp.sh submit %s. One file only: delete the file of any other k you tried." % (gid, gid))
 PY
 }
+# THE PUBLIC GUARD'S FILE RULES, run by check on the bytes it builds (comments already off) before lake, and by submit:
+# the file name, UTF-8, NUL, control and invisible characters, the import rule, the dangerous-by-name rule, the
+# own-namespace rule. A copy of .github/scripts/outside-guard.mjs (checkFileKind, textOf, checkProofFile) with its
+# sentences word for word, each with the one fix; tools/test_pnp_check_guard.sh holds both to the same verdicts.
+format_py() { cat <<'PY'
+import json, re, sys, unicodedata
+p, rel, st = sys.argv[1:4]; imp = json.load(open(st))["gap"].get("imports") or []; mod = rel[5:-5].replace("/", "."); red = "/R_" in rel
+WS = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"; S = "[" + WS + "]"
+def tok(x):  # the guard's tok(): 60 UTF-16 units, each one outside [A-Za-z0-9._'] read as ?
+    u = str(x).encode("utf-16-le", "surrogatepass")[:120]
+    return "".join(chr(u[i]) if u[i + 1] == 0 and re.fullmatch(r"[A-Za-z0-9._']", chr(u[i])) else "?" for i in range(0, len(u), 2))
+def stop(why, fix): print("REFUSED: " + why + ("\n  fix: " + fix if fix else ""), file=sys.stderr); sys.exit(1)
+if not re.fullmatch(r"lean/PEqualNP/Outside/(L_[a-z0-9_]+|R_[a-z0-9_]+_[1-9][0-9]{0,2}|V_[a-z0-9_]+__k(0|[1-9][0-9]{0,3}))\.lean", rel):
+    stop("the one file must be lean/PEqualNP/Outside/L_<gap>.lean (or R_<gap>_<n>.lean, n from 1 to 999, for a reduction; or V_<gap>__k<k>.lean for a value step)", "")
+try: t = open(p, "rb").read().decode("utf-8")
+except UnicodeDecodeError: stop("the file is not UTF-8 text", "save the file as UTF-8 text")
+t = t[1:] if t.startswith("\ufeff") else t  # the guard's TextDecoder drops a leading byte order mark
+if "\0" in t: stop("the file holds a NUL byte", "delete the NUL byte")
+if re.search("[\x00-\x08\x0b-\x1f\x7f]", re.sub(r"\r?\n", "", t)): stop("the file holds control characters", "delete the control characters (tabs and line breaks are fine)")
+if re.search("[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]", t): stop("the file holds invisible or direction-changing characters", "delete the invisible characters")
+L = [l[:-1] if l.endswith("\r") else l for l in t.split("\n")]; P = []; i = 0; th = 0; note = lambda at, why: P.append((at, why))
+while i < len(L) and (not L[i].strip(WS) or re.fullmatch(r"import ([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*)[ \t]*", L[i])):
+    n = L[i].strip(WS) and L[i].split(" ")[1].rstrip(" \t")
+    if n and not (n == "Mathlib" or n.startswith("Mathlib.") or n in imp): note(i + 1, "line %d: import %s is not allowed (only Mathlib and the modules the gap lists)" % (i + 1, tok(n)))
+    i += 1
+for k in range(i, len(L)):
+    if re.search(r"(^|[^A-Za-z0-9_])import([^A-Za-z0-9_]|$)", L[k]): note(k + 1, 'line %d: the word "import" after the import lines (imports are plain lines at the top, one module each)' % (k + 1))
+B, A, LIM = r"(?<![A-Za-z0-9_])", r"(?![A-Za-z0-9_])", r"set_option (maxRecDepth|maxHeartbeats|synthInstance\.maxSize|synthInstance\.maxHeartbeats) [0-9]+"
+FORB = re.compile(r'"|[«»]|simproc|builtin_|native|bv_decide|ofReduce|reduceNat|reduceBool|' + B + "(Lean|System|IO|Elab|Meta|Lake|FS|Process|EIO)" + A
+  + r"|_root_|RealWorld|BaseIO|include_str|notation|[A-Za-z_][A-Za-z0-9_']*[A-Za-z0-9_']%|polyrith|initialize|run_cmd|run_tac|run_elab|run_meta|by_elab|" + B + "elab|" + B + "macro|" + B + "syntax" + A
+  + "|" + B + "attribute" + A + "|" + B + "axiom" + A + "|" + B + "opaque" + A + "|unsafe|" + B + "partial" + A + "|sorry|" + B + "admit" + A + r"|#[a-z_][a-z_]{2,}|implemented_by|extern|`\([a-z]+\||\$\(|%\[|@\["
+  + "|register_|declare_|lcProof|lcUnreachable|" + B + "infix|" + B + "prefix" + A + "|" + B + "postfix" + A + "|set_option|binder_predicate|unif_hint|^" + S + "*add_[A-Za-z0-9_]+|unseal|compile_inductive|irreducible_def|proof_wanted|mk_iff_of_inductive_prop")
+RAW = set('" « » $( %[ @[ `(tactic| `(term| `(command| `(conv| `(doElem| #eval #check #print #reduce #synth #exit #help #lint #guard #guard_msgs #find #simp #norm_num #conv #where #time #check_failure #adaptation_note simproc builtin_ native bv_decide ofReduce reduceNat reduceBool Lean System IO Elab Meta Lake FS Process EIO _root_ RealWorld BaseIO include_str notation polyrith initialize run_cmd run_tac run_elab run_meta by_elab elab macro syntax attribute axiom opaque unsafe partial sorry admit implemented_by extern register_ declare_ lcProof lcUnreachable infix prefix postfix set_option binder_predicate unif_hint unseal compile_inductive irreducible_def proof_wanted mk_iff_of_inductive_prop'.split())
+for k, l in enumerate(L):
+    m = FORB.search(re.sub(r"@\[(local )?simp\]", "", re.sub(LIM + " in" + A, "", l)))
+    if m:
+        w = m.group(0).strip(WS); h = "; a line may not BEGIN with a name that starts with add_ (the library's commands do): if this is a lemma of yours used in a proof, put it after other text on the line or rename it" if w.startswith("add_") else ""
+        if re.fullmatch(S + "*" + LIM + S + "*", l): h = "; a limit option holds only for one declaration: write it as set_option <option> <value> in, directly before the declaration that needs it"
+        if w == "bv_decide": h = "; bv_decide runs a SAT solver as the file builds, so use tactics the kernel checks alone, e.g. decide (small sizes), simp, omega, rfl"
+        note(k + 1, 'line %d: "%s" is not allowed in a proof file, in code or in a comment (no code that runs at build time, no new syntax, no string literals, no attributes but simp, no options but the four limits)%s' % (k + 1, w if w in RAW else tok(w), h))
+    th += bool(re.match(S + r"*(@\[(local )?simp\] )?((private|protected) )?theorem ", l))
+if not th: note(float("inf"), "the file holds no theorem")
+# THE OWN-NAMESPACE RULE. \p{L} and \p{N} are read by mapping each other letter to a and number to 0 (same length), so the
+# patterns stay ASCII and names are cut from the real line. No comment is left to blank: check removed them all.
+uni = lambda s: "".join(c if c < "\x80" else "a" if unicodedata.category(c)[0] == "L" else "0" if unicodedata.category(c)[0] == "N" else c for c in s)
+ID = r"[A-Za-z_][A-Za-z0-9_'!?]*(?:\.[A-Za-z_][A-Za-z0-9_'!?]*)*"; W = lambda ws: re.compile(r"(?<![A-Za-z0-9_.'!?])(?:" + ws + r")(?![A-Za-z0-9_'!?])")
+SW, AT = W("namespace|section|end|mutual"), W("def|theorem|lemma|abbrev|instance|structure|class|inductive|coinductive|example|opaque|axiom|noncomputable|private|protected|partial|unsafe|variable|universe|attribute|export|deriving|alias|local|scoped|omit|include|mk_iff_of_inductive_prop")
+own = lambda n: n == mod or n.startswith(mod + ".") or n == mod + "_aux" or n.startswith(mod + "_aux."); fix = "put every helper inside `namespace %s` ... `end %s`; only the imports and the theorem stay outside" % (mod, mod)
+if mod.endswith("_aux"): note(-1, "the file name may not end in _aux (that suffix names the helper namespace of another file)")
+stack = []; thm = False
+for k, l in enumerate(L):
+    code = l.rstrip(" \t"); c2 = uni(code); at = "line %d" % (k + 1); say = lambda why: note(k + 1, at + ": " + why)
+    if not code.strip(WS): continue
+    if SW.search(c2):
+        m = re.fullmatch("(?:(namespace) (" + ID + ")|(noncomputable section|section)(?: (" + ID + "))?|(end)(?: (" + ID + "))?|(mutual))[ \t]*", c2); g = lambda j: m.group(j) and code[m.start(j):m.end(j)]
+        if not m: say("`namespace`, `section`, `end` and `mutual` must stand alone at the start of a line (not indented, nothing else on it); " + fix)
+        elif thm: say("nothing but the proof may follow the theorem %s; %s" % (mod, fix))
+        elif m.group(1):
+            if red: say("`namespace %s`; a reduction file holds its one theorem `theorem %s : T1 → ... → Tk → S` and nothing else, so it opens no namespace" % (tok(g(2)), mod))
+            elif not stack and not own(g(2)): say("`namespace %s` at the top level; the only namespace allowed there is the file's own; %s" % (tok(g(2)), fix))
+            stack.append(("namespace", g(2)))
+        elif m.group(3) or m.group(7):
+            if not stack: say(("a section at the top level; open it inside the file's own namespace; " if m.group(3) else "`mutual` at the top level; ") + fix)
+            stack.append(("section", g(4)) if m.group(3) else ("mutual", None))
+        else:
+            top = stack.pop() if stack else None
+            if not top: say("`end` with nothing open to close; " + fix)
+            elif (g(6) is not None) if top[0] == "mutual" else g(6) != top[1]:
+                say("`end%s` does not name what it closes (%s)" % (" " + tok(g(6)) if g(6) else "", "`end` alone closes `mutual`" if top[0] == "mutual" else "write `end%s`" % (" " + tok(top[1]) if top[1] else "")))
+    elif thm:
+        w = AT.search(c2)
+        if w: say('"%s" after the theorem %s; nothing but its proof may follow it; %s' % (tok(w.group(0)), mod, fix))
+    elif stack or re.fullmatch(r"import [^ \t]+", code) or re.fullmatch(LIM + r" in[ \t]*", code): pass
+    elif re.match(r"open[ \t]", code):
+        if re.search(r"[ \t]in[ \t]+[^" + WS + "]", code): say("an `open ... in` line must end with `in`, with the theorem on the next line; " + fix)
+    elif re.match("theorem " + re.escape(mod) + r"(?![A-Za-z0-9_'!?.])", c2): thm = True
+    else: say("a declaration or command outside the file's own namespace (at the top level only imports, `open` lines, the four limit options, `namespace %s` and `theorem %s` may stand); %s" % (mod, mod, fix))
+if not thm: note(float("inf"), "the theorem must stand at the top level, last, written with its full name: `theorem %s ...`; %s" % (mod, fix))
+if not P: sys.exit(0)
+whys = [w if len(w) <= 400 else w[:397] + "..." for _, w in sorted(P, key=lambda x: x[0])]; out = []; size = 0
+for w in whys:  # the guard's caps: 40 lines, 6000 characters with 200 kept back
+    if out and (len(out) == 40 or size + 1 + len(w) > 5800): break
+    out.append(w); size += (1 if len(out) > 1 else 0) + len(w)
+if len(out) < len(whys): out.append("... and %d more" % (len(whys) - len(out)))
+FIX = (('" is not allowed', "take that word out of the line"), ("is not allowed (only Mathlib", "delete this import line"), ('the word "import"', "take the word import out of this line"), ("no theorem", "keep the theorem %s in the file" % mod))
+for w in out: print("REFUSED: " + w + "".join("\n  fix: " + f for s, f in FIX if s in w and "; " not in w), file=sys.stderr)
+print("not built: the project's checker refuses this file before any build, for the lines above", file=sys.stderr); sys.exit(1)
+PY
+}
+format_ok() { python3 -I -c "$(format_py)" "$ROOT/$2" "$2" "$STATE/$1.json" || exit 1; }
 case "${1:-help}" in
 setup)
   need git "https://git-scm.com"; need curl "curl"; need python3 "python 3"
@@ -296,6 +386,7 @@ print("STOP: " + re.sub(r"[^ -~]", " ", str(d.get("error") or "the lease is gone
 check)
   has_file "$2"; id="$2"; file="$(field "$id" gap.file)"; rm -f "$STATE/$id.checked"; still_open "$id"
   tidy "$ROOT/$file"; size_ok "$file"; built="$(sha < "$ROOT/$file")"
+  format_ok "$id" "$file"
   (cd "$ROOT/lean" && lake build "$(field "$id" gap.module)") || exit 1
   [ "$(sha < "$ROOT/$file")" = "$built" ] || { echo "$file changed while it was building; run check again" >&2; exit 1; }
   printf '%s %s\n' "$built" "$file" > "$STATE/$id.checked"
@@ -310,6 +401,7 @@ submit)
   still_open "$id"
   size_ok "$file"
   is_checked "$id" "$file" < "$ROOT/$file" || { echo "not submitted: $file is not the file that was checked. Run: tools/pnp.sh check $id" >&2; exit 1; }
+  format_ok "$id" "$file"
   grep -q 'sorry' "$ROOT/$file" && { echo "$file still contains sorry" >&2; exit 1; }
   cd "$ROOT"
   other="$(git status --porcelain | grep -v " $file\$" | grep -v '^?? \.pnp/' || true)"
